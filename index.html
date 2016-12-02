@@ -1,0 +1,261 @@
+<!-- 
+// *******************************************************
+// CS 174a Graphics Example Code
+index.html - The web page document containing the canvas (drawing surface), that launches your javascript files, and hides the vertex and fragment shader programs in some strings. //-->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8"/>
+<script id="vertex-shader-id" type="x-shader/x-vertex">
+// *******************************************************
+// The following string is loaded by our javascript and then used as the Vertex Shader program.  Our javascript sends this code to the graphics card at runtime, where on each run it gets 
+// compiled and linked there.  Thereafter, all of your calls to draw shapes will launch the vertex shader program once per vertex in the shape (three times per triangle), sending results on 
+// to the next phase.  The purpose of this program is to calculate the final resting place of vertices in screen coordinates; each of them starts out in local object coordinates.
+
+precision mediump float;
+const int N_LIGHTS = 2;               // Be sure to keep this line up to date as you add more lights
+
+attribute vec4 vColor;
+attribute vec3 vPosition, vNormal;
+attribute vec2 vTexCoord;
+varying vec2 fTexCoord;
+varying vec3 N, E, pos;
+
+uniform float ambient, diffusivity, shininess, smoothness, animation_time, attenuation_factor[N_LIGHTS];
+uniform bool GOURAUD, COLOR_NORMALS, COLOR_VERTICES;		// Flags for alternate shading methods
+
+uniform vec4 lightPosition[N_LIGHTS], lightColor[N_LIGHTS], shapeColor;
+varying vec4 VERTEX_COLOR;
+varying vec3 L[N_LIGHTS], H[N_LIGHTS];
+varying float dist[N_LIGHTS];
+
+uniform mat4 camera_transform, camera_model_transform, projection_camera_model_transform;
+uniform mat3 camera_model_transform_normal;
+
+void main()
+{
+  N = normalize( camera_model_transform_normal * vNormal );
+	
+	vec4 object_space_pos = vec4(vPosition, 1.0);
+  gl_Position = projection_camera_model_transform * object_space_pos;
+
+	if( COLOR_NORMALS || COLOR_VERTICES )		// Bypass phong lighting if we're lighting up vertices some other way
+	{
+		VERTEX_COLOR   = COLOR_NORMALS ? ( vec4( N[0] > 0.0 ? N[0] : sin( animation_time * 3.0   ) * -N[0],             // In normals mode, rgb color = xyz quantity.  Flash if it's negative.
+                                             N[1] > 0.0 ? N[1] : sin( animation_time * 15.0  ) * -N[1],
+                                             N[2] > 0.0 ? N[2] : sin( animation_time * 45.0  ) * -N[2] , 1.0 ) ) : vColor;
+		VERTEX_COLOR.a = VERTEX_COLOR.w;
+		return;
+	}
+
+  pos = ( camera_model_transform * object_space_pos ).xyz;
+	E = normalize( -pos ); 
+	
+  for( int i = 0; i < N_LIGHTS; i++ )
+	{
+		L[i] = normalize( ( camera_transform * lightPosition[i] ).xyz - lightPosition[i].w * pos );		// Use w = 0 for a directional light -- a vector instead of a point.   
+		H[i] = normalize( L[i] + E );
+                                                                      // Is it a point light source?  Calculate the distance to it from the object.  Otherwise use some arbitrary distance.
+		dist[i]  = lightPosition[i].w > 0.0 ? distance((camera_transform * lightPosition[i]).xyz, pos) : distance( attenuation_factor[i] * -lightPosition[i].xyz, object_space_pos.xyz );
+	}
+
+	if( GOURAUD )         // Gouraud mode?  If so, finalize the whole color calculation here in the vertex shader, one per vertex, before we even break it down to pixels in the fragment shader.
+	{
+		VERTEX_COLOR = vec4( shapeColor.xyz * ambient, shapeColor.w);
+		for(int i = 0; i < N_LIGHTS; i++)
+		{
+			float attenuation_multiplier = 1.0 / (1.0 + attenuation_factor[i] * (dist[i] * dist[i])); 
+			float diffuse  = max( -dot(L[i], N), 0.0 );
+			float specular = pow( max(dot(N, H[i]), 0.0), smoothness );
+
+			VERTEX_COLOR.xyz += attenuation_multiplier * ( shapeColor.xyz * diffusivity * diffuse + lightColor[i].xyz * shininess * specular );
+		}
+		VERTEX_COLOR.a = VERTEX_COLOR.w;
+	}  
+	fTexCoord = vTexCoord;  
+}
+</script>
+
+<script id="fragment-shader-id" type="x-shader/x-fragment">
+// *******************************************************
+// Likewise, the following string is loaded by our javascript and then used as the Fragment Shader program, which gets sent to the graphics card at runtime.  The fragment shader runs 
+// once all vertices in a triangle / element finish their vertex shader programs, and thus have finished finding out where they land on the screen.  The fragment shader fills in (shades)
+// every pixel (fragment) overlapping where the triangle landed.  At each pixel it interpolates different values from the three extreme points of the triangle, and uses them in formulas
+// to determine color.
+
+precision mediump float;
+
+const int N_LIGHTS = 2;
+
+uniform vec4 lightColor[N_LIGHTS], shapeColor;
+varying vec3 L[N_LIGHTS], H[N_LIGHTS];
+varying float dist[N_LIGHTS];
+varying vec4 VERTEX_COLOR;
+
+uniform float ambient, diffusivity, shininess, smoothness, animation_time, attenuation_factor[N_LIGHTS];
+
+varying vec2 fTexCoord;		// per-fragment interpolated values from the vertex shader
+varying vec3 N, E, pos;
+
+uniform sampler2D texture; 
+uniform bool GOURAUD, COLOR_NORMALS, COLOR_VERTICES, USE_TEXTURE;
+
+void main()
+{    
+	if( GOURAUD || COLOR_NORMALS )		// Bypass phong lighting if we're only interpolating predefined colors across vertices
+	{
+		gl_FragColor = VERTEX_COLOR;
+		return;
+	}
+	
+	vec4 tex_color = texture2D( texture, fTexCoord );
+	gl_FragColor = tex_color * ( USE_TEXTURE ? ambient : 0.0 ) + vec4( shapeColor.xyz * ambient, USE_TEXTURE ? shapeColor.w * tex_color.w : shapeColor.w ) ;
+	for( int i = 0; i < N_LIGHTS; i++ )
+	{
+		float attenuation_multiplier = 1.0 / (1.0 + attenuation_factor[i] * (dist[i] * dist[i])); 
+		float diffuse  = max( dot(L[i], N), 0.0 );
+		float specular = pow( max(dot(N, H[i]), 0.0), smoothness );
+	
+		gl_FragColor.xyz += attenuation_multiplier * (shapeColor.xyz * diffusivity * diffuse  + lightColor[i].xyz * shininess * specular );
+	}
+	gl_FragColor.a = gl_FragColor.w;
+}
+</script>
+
+<script id="demo-shader-id" type="x-shader/x-fragment">
+// *******************************************************
+// An alternate fragment shader to the above that's a procedural function of time.
+
+precision mediump float;
+
+uniform float animation_time;
+uniform bool USE_TEXTURE;
+varying vec2 fTexCoord;		// per-fragment interpolated values from the vertex shader
+
+void main()
+{    
+  if( !USE_TEXTURE ) return;    // USE_TEXTURE must be enabled for any shape using this shader; otherwise texture_coords lookup will fail.
+  
+  float a = animation_time, u = fTexCoord.x, v = fTexCoord.y + a;
+    
+  gl_FragColor = vec4( 
+    2.0 * u * sin(17.0 * u ) + 3.0 * v * sin(11.0 * v ) + 1.0 * sin(13.0 * a),
+    3.0 * u * sin(18.0 * u ) + 4.0 * v * sin(12.0 * v ) + 2.0 * sin(14.0 * a),
+    4.0 * u * sin(19.0 * u ) + 5.0 * v * sin(13.0 * v ) + 3.0 * sin(15.0 * a),
+    5.0 * u * sin(20.0 * u ) + 6.0 * v * sin(14.0 * v ) + 4.0 * sin(16.0 * a));
+  gl_FragColor.a = gl_FragColor.w;
+}
+</script>
+
+<!-- 
+// *******************************************************
+Javascript "include" files.  Any code in them gets executed as part of the page loading.
+//-->
+
+<script type="text/javascript" src="../Common/MV.js"></script>
+<script type="text/javascript" src="../Common/Shape.js"></script>
+<script type="text/javascript" src="../Common/Built_In_Shapes.js"></script>
+<script type="text/javascript" src="../Common/webgl-obj-loader.js"></script>
+<script type="text/javascript" src="../Common/GL_Context.js"></script>
+<script type="text/javascript" src="../Common/shortcut.js"></script>
+<script type="text/javascript" src="Custom_Shapes.js"></script>
+<script type="text/javascript" src="../Common/Key.js"></script>     
+    
+	<!-- polyfill -->
+	<script src="../Common/MIDI.js-master/inc/shim/Base64.js" type="text/javascript"></script>
+	<script src="../Common/MIDI.js-master/inc/shim/Base64binary.js" type="text/javascript"></script>
+	<script src="../Common/MIDI.js-master/inc/shim/WebAudioAPI.js" type="text/javascript"></script>
+    <!-- jasmid package -->
+	<script src="../Common/MIDI.js-master/inc/jasmid/stream.js"></script>
+	<script src="../Common/MIDI.js-master/inc/jasmid/midifile.js"></script>
+	<script src="../Common/MIDI.js-master/inc/jasmid/replayer.js"></script>
+	<!-- midi.js package -->
+	<script src="../Common/MIDI.js-master/js/midi/audioDetect.js" type="text/javascript"></script>
+	<script src="../Common/MIDI.js-master/js/midi/gm.js" type="text/javascript"></script>
+	<script src="../Common/MIDI.js-master/js/midi/loader.js" type="text/javascript"></script>
+	<script src="../Common/MIDI.js-master/js/midi/plugin.audiotag.js" type="text/javascript"></script>
+	<script src="../Common/MIDI.js-master/js/midi/plugin.webaudio.js" type="text/javascript"></script>
+	<script src="../Common/MIDI.js-master/js/midi/plugin.webmidi.js" type="text/javascript"></script>
+	<script src="../Common/MIDI.js-master/js/midi/player.js" type="text/javascript"></script>
+	<!-- utils -->
+	<script src="../Common/MIDI.js-master/js/util/dom_request_xhr.js" type="text/javascript"></script>
+	<script src="../Common/MIDI.js-master/js/util/dom_request_script.js" type="text/javascript"></script>
+    <script src="../Common/MIDI.js-master/build/MIDI.js" type="text/javascript"></script>
+ 
+<script type="text/javascript" src="animation.js"></script>
+<!--    <script type="text/javascript" src="miditest.js"></script>-->
+    
+</head><body>
+<canvas id="gl-canvas" width="800" height="600"></canvas><p>
+<a href="#" onclick='document.getElementById( "instructions" ).style = "display:block"; this.style = "display:none";'> Click for instructions </a><div id="instructions" style = "display:none">
+    
+  
+    
+    
+Controlling this Graphics Object: 
+<ul><li>
+CS 174 Project 2<li>
+<li>
+KRAZY PIANO<li>
+<li>
+    - Hierarchical object: Piano, rotating keys are hinged to main body<li>
+    
+    - Custom objects: Piano, black hole. Both are textured.<li>
+
+    - Discontinuous edges: Edges where sides and bottom face of piano meet. This can be seen more clearly by showing normals (alt+n)<li>
+    
+    - Viewing normals also makes key movements more obvious<li>
+    
+    - If MIDI doesn't play, follow the instructions for Firefox at the following link:<li>
+        https://github.com/mrdoob/three.js/wiki/How-to-run-things-locally<li>
+    
+    - Changing MIDI songs frequently can cause the audio to lag<li>
+
+    <li>
+    CONTROLS:<li>
+    
+    alt+a: start animation<li>
+    
+    alt+n: show normals<li>
+    
+    v: debug screen<li>
+    
+    m: play demo song<li>
+    
+    n: stop demo song, allows user to hear own input<li>
+    
+    x, c: scroll through demo songs<li>
+    
+    a,w,s,e,d,f,t,g,y,h,u,j,k: play piano<li>
+    
+    alt+f: lock/unlock camera to return/move it<li>
+    
+    arrow keys: camera thrust when camera is unlocked<li>
+    
+    mouse: steer/rotate camera when unlocked<li>
+    
+    l: activate black hole or return piano to starting location<li>
+    
+    
+    <li>
+    FUTURE DEVELOPMENTS:<li>
+    
+    - Reduce latency<li>
+    
+    - Smooth out intro scene<li>
+    
+    - Allow user to change instrument sound<li>
+    
+    - Automatically start next demo song when the current one finishes<li>
+    
+    - Include electric piano model<li>
+    
+    - Smoother transition between curved and flat black hole segments<li>
+    
+    - Volume decay when piano falls<li>
+    
+    - Allow user to change octave<li>
+    
+    - Flying aliens<li>
+</div></p></body>
+</html>
